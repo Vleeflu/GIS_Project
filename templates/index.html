@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Japan AQI Heatmap</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: Inter, Arial, Helvetica, sans-serif;
+    }
+
+    #map {
+      height: 100vh;
+      width: 100%;
+    }
+
+    .panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 99999;
+      background: rgba(255,255,255,0.95);
+      padding: 12px;
+      border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+      width: 270px;
+      font-size: 13px;
+    }
+
+    .panel h4 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+
+    .panel .row {
+      margin: 6px 0;
+      font-size: 13px;
+    }
+
+    .panel input[type="number"] {
+      width: 60px;
+      padding: 4px;
+      margin-left: 4px;
+    }
+
+    .panel button {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 0;
+      background: #1976d2;
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .panel button.secondary {
+      background: #4caf50;
+    }
+
+    .legend {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      z-index: 99999;
+      background: #fff;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+      font-size: 12px;
+    }
+
+    .legend .item {
+      display: flex;
+      align-items: center;
+      margin: 4px 0;
+    }
+
+    .colorbox {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      margin-right: 8px;
+      border: 1px solid #222;
+    }
+
+    #hoverinfo {
+      position: absolute;
+      pointer-events: none;
+      z-index: 9999999;
+      display: none;
+      min-width: 140px;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      font-size: 13px;
+    }
+
+    .crosshair {
+      position: absolute;
+      pointer-events: none;
+      z-index: 999998;
+      display: none;
+    }
+
+    .crosshair .hline,
+    .crosshair .vline {
+      position: absolute;
+      background: rgba(255,255,255,0.25);
+      pointer-events: none;
+    }
+
+    .crosshair .hline {
+      height: 1px;
+      left: 0;
+      right: 0;
+    }
+
+    .crosshair .vline {
+      width: 1px;
+      top: 0;
+      bottom: 0;
+    }
+
+    .leaflet-control-container .leaflet-top.leaflet-left {
+      margin-top: 60px;
+    }
+
+    .city-panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 99999;
+      background: rgba(255,255,255,0.95);
+      padding: 12px;
+      border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+      width: 280px;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    .city-panel h4 {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+    }
+
+    .city-panel input[type="text"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+      box-sizing: border-box;
+      margin-bottom: 10px;
+    }
+
+    .city-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .city-table th {
+      background: #f5f5f5;
+      padding: 8px 6px;
+      text-align: left;
+      border-bottom: 2px solid #ddd;
+      font-weight: 600;
+    }
+
+    .city-table td {
+      padding: 8px 6px;
+      border-bottom: 1px solid #eee;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .city-table tr:hover td {
+      background: #f0f7ff;
+    }
+
+    .city-table .city-name {
+      font-weight: 500;
+    }
+
+    .city-table .city-aqi {
+      text-align: center;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 4px 6px;
+    }
+    .heatmap-canvas {
+        opacity: 0.5;
+        transition: opacity 0.2s linear;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="panel">
+    <h4>Japan AQI (WAQI)</h4>
+
+    <div class="row">
+      Grid:
+      <label>Rows
+        <input id="inpRows" type="number" min="20" max="240" value="100">
+      </label>
+      <label>Cols
+        <input id="inpCols" type="number" min="20" max="240" value="160">
+      </label>
+    </div>
+
+    <div class="row">
+      k (IDW neighbors):
+      <input id="inpK" type="number" min="1" max="30" value="6">
+    </div>
+
+    <div class="row">
+      <button onclick="applyGrid()">Apply Grid</button>
+      <button class="secondary" onclick="refreshData()">Refresh</button>
+    </div>
+
+    <div class="row" style="margin-top: 8px; font-size: 12px; color:#555;">
+      <span id="status">Status: idle</span>
+    </div>
+  </div>
+
+  <div class="legend" id="legend">
+    <div style="font-weight:700;margin-bottom:6px">AQI Legend</div>
+    <div class="item"><div class="colorbox" style="background:#00e400"></div>Good (0–50)</div>
+    <div class="item"><div class="colorbox" style="background:#ffff00"></div>Moderate (51–100)</div>
+    <div class="item"><div class="colorbox" style="background:#ff7e00"></div>Sensitive (101–150)</div>
+    <div class="item"><div class="colorbox" style="background:#ff0000"></div>Unhealthy (151–200)</div>
+    <div class="item"><div class="colorbox" style="background:#8f3f97"></div>Very Unhealthy (201–300)</div>
+    <div class="item"><div class="colorbox" style="background:#7e0023"></div>Hazardous (300+)</div>
+  </div>
+
+  <div class="city-panel">
+    <h4>🏙️ Japanese Cities</h4>
+    <input type="text" id="citySearch" placeholder="Search city..." />
+    <table class="city-table">
+      <thead>
+        <tr>
+          <th>City</th>
+          <th style="text-align:center;">AQI</th>
+        </tr>
+      </thead>
+      <tbody id="cityTableBody">
+      </tbody>
+    </table>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="hoverinfo"></div>
+
+  <div class="crosshair" id="crosshair">
+    <div class="hline"></div>
+    <div class="vline"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+  <script src="/static/main.js"></script>
+</body>
+</html>
