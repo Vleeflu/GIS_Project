@@ -1,4 +1,4 @@
-Python Libraries
-requests
 flask
-random
+requests
+gunicorn
+python-dotenv
