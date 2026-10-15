@@ -1,18 +1,30 @@
-console.log("main.js LOADED (Japan AQI)");
+console.log("main.js LOADED (ASEAN AQI)");
 
 let stationPoints = [];
 let stationMarkers = [];
 
-const map = L.map("map").setView([36, 138], 5);
+const map = L.map("map").setView([7, 116], 4);
 
 L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   {
     maxZoom: 18,
+    attribution:
+      'Air quality model: <a href="https://open-meteo.com/">Open-Meteo</a> (CAMS) · ' +
+      'Stations: <a href="https://waqi.info/">WAQI</a> · ' +
+      'Cities: <a href="https://www.geonames.org/">GeoNames</a>',
   }
 ).addTo(map);
 
-let allPoints = [];
+// Grid cells farther than this from every data point stay blank instead of
+// extrapolating over the sea or non-ASEAN land inside the bounding box.
+const IDW_MAX_DIST_DEG = 1.5;
+
+const SOURCE_LABELS = {
+  "open-meteo": "Open-Meteo (model)",
+  "waqi": "WAQI (station)"
+};
+
 let gridVals = null;
 let heatLayers = [];
 let hoverbox = document.getElementById("hoverinfo");
@@ -28,20 +40,24 @@ function getAQIColor(aqi){
 }
 
 function refreshData(){
-  setStatus("Fetching WAQI points...");
+  setStatus("Fetching AQI points...");
   fetch("/api/air")
     .then(r => r.json())
     .then(data => {
-      allPoints = data || [];
-      stationPoints = allPoints.slice();
+      stationPoints = data || [];
 
-      console.log("Received points:", allPoints.length);
+      const counts = {};
+      stationPoints.forEach(p => { counts[p.source] = (counts[p.source] || 0) + 1; });
+      console.log("Received points:", counts);
 
       renderStationMarkers();
       applyGrid();
       populateCityTable();
 
-      setStatus("Fetched " + allPoints.length + " stations");
+      setStatus(
+        "Open-Meteo: " + (counts["open-meteo"] || 0) +
+        " · WAQI: " + (counts["waqi"] || 0)
+      );
     })
     .catch(err => {
       console.error(err);
@@ -65,6 +81,7 @@ function renderStationMarkers(){
     marker.bindPopup(`
       <b>${p.name}</b><br>
       AQI: ${p.aqi}<br>
+      ${SOURCE_LABELS[p.source] || p.source}<br>
       Lat: ${p.lat.toFixed(3)}, Lon: ${p.lon.toFixed(3)}
     `);
 
@@ -79,7 +96,7 @@ function sqDist(aLat,aLon,bLat,bLon){
 }
 
 function applyGrid(){
-  if (!allPoints.length){
+  if (!stationPoints.length){
     setStatus("No points to grid");
     return;
   }
@@ -91,7 +108,7 @@ function applyGrid(){
   let minLat = Infinity, maxLat = -Infinity;
   let minLon = Infinity, maxLon = -Infinity;
 
-  allPoints.forEach(p => {
+  stationPoints.forEach(p => {
       if (p.lat < minLat) minLat = p.lat;
       if (p.lat > maxLat) maxLat = p.lat;
       if (p.lon < minLon) minLon = p.lon;
@@ -106,19 +123,13 @@ function applyGrid(){
   const dlat = (maxLat - minLat) / (rows - 1);
   const dlon = (maxLon - minLon) / (cols - 1);
 
-  const vals = Array.from({ length: rows }, () => new Array(cols).fill(0));
-
-  const pts = allPoints.map(p => ({
-    lat: p.lat,
-    lon: p.lon,
-    aqi: p.aqi
-  }));
+  const vals = Array.from({ length: rows }, () => new Array(cols).fill(null));
 
   for (let i = 0; i < rows; i++){
     const lat = minLat + i * dlat;
     for (let j = 0; j < cols; j++){
       const lon = minLon + j * dlon;
-      vals[i][j] = idwEstimate(lat, lon, pts, k, 2.0);
+      vals[i][j] = idwEstimate(lat, lon, stationPoints, k, 2.0);
     }
   }
 
@@ -127,29 +138,33 @@ function applyGrid(){
   setStatus("Grid ready (" + rows + "x" + cols + ")");
 }
 
+// Inverse-distance weighting over the k nearest points. Keeps a small sorted
+// top-k buffer instead of sorting every point for every cell (~400 points).
 function idwEstimate(lat,lon,pts,k=6,power=2){
-  if (!pts.length) return 0;
-
-  const arr = [];
+  const best = [];
   for (let i = 0; i < pts.length; i++){
     const p = pts[i];
     const d2 = sqDist(lat, lon, p.lat, p.lon) + 1e-12;
-    arr.push({ d2, aqi: p.aqi });
+    if (best.length === k && d2 >= best[k - 1].d2) continue;
+
+    let pos = best.length;
+    while (pos > 0 && best[pos - 1].d2 > d2) pos--;
+    best.splice(pos, 0, { d2, aqi: p.aqi });
+    if (best.length > k) best.pop();
   }
 
-  arr.sort((a,b) => a.d2 - b.d2);
+  if (!best.length || best[0].d2 > IDW_MAX_DIST_DEG * IDW_MAX_DIST_DEG) return null;
 
   let sumW = 0;
   let sumWA = 0;
-  const n = Math.min(k, arr.length);
 
-  for (let t = 0; t < n; t++){
-    const w = 1 / Math.pow(Math.sqrt(arr[t].d2), power);
+  for (let t = 0; t < best.length; t++){
+    const w = 1 / Math.pow(Math.sqrt(best[t].d2), power);
     sumW += w;
-    sumWA += w * arr[t].aqi;
+    sumWA += w * best[t].aqi;
   }
 
-  return sumW === 0 ? 0 : sumWA / sumW;
+  return sumWA / sumW;
 }
 
 function renderGridHeat(g){
@@ -175,6 +190,7 @@ function renderGridHeat(g){
     for (let j = 0; j < g.cols; j++){
       const lon = g.minLon + j * g.dlon;
       const aqi = g.vals[i][j];
+      if (aqi == null) continue;
 
       const bucket =
         aqi <= 50   ? "good" :
@@ -262,6 +278,7 @@ map.on("mousemove", e => {
         ${st.name}
       </div>
       <div style="font-size:11px;">
+        ${SOURCE_LABELS[st.source] || st.source}<br>
         Lat: ${st.lat.toFixed(3)}, Lon: ${st.lon.toFixed(3)}
       </div>
     `;
